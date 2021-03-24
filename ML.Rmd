@@ -1,0 +1,327 @@
+---
+title: "Statistical Learning Practice"
+
+output: 
+  html_document:
+    toc: true
+    number_section: true
+    theme: united
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Inport Simulated Data
+```{r message = FALSE}
+library(tidyverse)
+library(dplyr)
+sim.data = read.csv("/Users/BinLi/Desktop/sim_data.csv")
+dim(sim.data)
+str(sim.data)
+
+sim.data = sim.data %>% 
+  mutate(y = factor(y),
+         x1 = factor(x1),
+         x2 = factor(x2),
+         x3 = factor(x3))
+
+```
+
+
+# Explanatory Data Analysis
+
+## Check Major Numerical Variables and y  
+<br>
+The plot below gives us a general insight about the numeric features. The lower left displays the distribution of them. The upper right is a correlation matrix. And the right side shows the boxplot of each numeric feature grouped by the response, y.  
+<br>
+Several problems are uncovered.  
+<br>
+(1) **Skewness**: Some features, like x10, have a wide range of values and they are extremely large, which would be a issue when a parametric model is fitted. Some also has a skewed distribution. Transformation and feature scaling are needed for parametric models.  
+<br>
+(2) **Multicollinearity**: The correlation matrix tells us paris of features are correlated heavily. Multicollinearity should be taken care of for some model.  
+<br>
+(3) **Imbalanced data**: The bar chart for y in the right corner indicates the dataset is imbalanced. The ratio of counts between "y = 0" and "y = 1" is not near 0.5. Some thechniques should be considered to determine an optimal threshold and make model comparison.  
+<br>
+
+```{r message = FALSE, fig.height=10, fig.width=10}
+num.value = sim.data[,-c(1,3:5)]
+
+library(GGally)
+library(ggplot2)
+ggpairs(num.value[,c(2:10,1)], ggplot2::aes(colour = y, alpha = 0.1), 
+        axisLabels = "show", upper = list(continuous = wrap("cor",size = 3))) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) 
+```
+
+## Check Categorical Variables 
+<br>
+(1) x1: Mosaic plot shows the proportion of "False" and "Ture" when y = 0 and y = 1 respectively. It's clear that the proportion of "False" and "Ture" when y = 0 is not the same as that when y = 1. Therefore, "x1" could have some association with y.  
+<br>
+```{r message=FALSE}
+library(ggmosaic)
+ggplot() +
+  geom_mosaic(aes(x = product(x1, y), fill = y), alpha = 0.7, data = sim.data) +
+  theme_bw() +
+  labs(title = "Mosaic Plot for x1 and y") +
+  theme(plot.title = element_text(hjust = 0.5)) 
+  
+```
+<br>
+(2) x2: "x2" has only one level, meaning it is non-informative features for the models.  
+<br>
+```{r}
+unique(sim.data$x2)
+```
+<br>
+(3) x3: The barplot provides some relation between "x3" and "y". When y = 0, "x3 = False" has fewer counts than "True". In contrary, "x3 = False" has more counts than "True" when y = 1.  
+<br>
+```{r}
+ggplot() +
+  geom_bar(aes(x3, fill = x3), stat = "count", alpha = 0.7, data = sim.data) +
+  labs(title = "Barplot for x3 and y") +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  facet_wrap(~y,
+             labeller = labeller(y = c("0" = "y = 0", "1" = "y = 1"))) 
+
+```
+<br>
+
+
+# Modeling 
+
+## Check Features and NAs  
+<br>
+(1) **Check zero features**: "x2" is zero feature contributing no imformation to models. We can exclude it when fitting a model.  
+<br>
+(2) **Check NAs**: No missing values appears in the dataset.  
+<br>
+```{r message=FALSE}
+#Check zero or near zero features
+library(caret)
+nearZeroVar(sim.data, saveMetrics = TRUE) %>% 
+  tibble::rownames_to_column() %>% 
+  filter(nzv)
+
+#Check NAs
+sum(is.na(sim.data))
+```
+<br>
+
+## Random Forest Model  
+<br>
+Based on the explanatory data analysis, a model resistent to skewness and multicollinearity should be proposed. The nonparamatric model, random forest, could be a potential fit.  
+<br>
+(1) **Build RF model **: The data is split into training and test sets based a ratio 7 to 3 through stratified sampling. Grid search is conducted to find out the optimal value for each parameter. Then, the model, **rf.opt**, is built through "ranger" function. The variance importance plot shows "x9", "x7", and "x4" are the top three important features.  
+<br>
+```{r message=FALSE}
+library(ranger)
+library(rsample)
+# Remove feature2 and feature10 in the model
+rf.data = sim.data[,c(-1,-4)]
+rf2.data = rf.data %>% 
+  mutate(y = factor(y, labels = make.names(levels(y))))
+
+# Split into training and test sets
+set.seed(1)
+split.strat = initial_split(rf2.data, prop = 0.7, strata = "y")
+rf.train = training(split.strat)
+rf.test = testing(split.strat)
+
+
+# Grid Search for optimal values
+n.feature = ncol(rf.train) - 1
+
+hyper.grid = expand.grid(
+  mtry = floor(n.feature*c(0.3, 0.5, 0.6, 0.8)),
+  min.node.size = c(1,3,5,8),
+  replace = c(TRUE, FALSE),
+  sample.fraction = c(0.5, 0.63, 0.7),
+  num.trees = c(1000, 2000),
+  OOB = NA
+)
+
+
+for(i in seq_len(nrow(hyper.grid))){
+  rf.ranger = ranger(
+    formula = y ~.,
+    data = rf.train,
+    num.trees = hyper.grid$num.trees[i],
+    mtry = hyper.grid$mtry[i],
+    importance = "impurity",
+    min.node.size = hyper.grid$min.node.size[i],
+    write.forest = FALSE,
+    replace = hyper.grid$replace[i],
+    sample.fraction = hyper.grid$sample.fraction[i],
+    verbose = FALSE,
+    seed = 1,
+    probability = TRUE,
+    respect.unordered.factors = "order"
+  )
+ hyper.grid$OOB[i] = rf.ranger$prediction.error
+ 
+}
+
+# Use OOB in ranger function to select the optimal values
+hyper.grid %>% arrange(OOB) %>% head(10)
+
+# Fit the random forest model with the optimal values
+rf.opt = ranger(
+    formula = y ~.,
+    data = rf.train,
+    num.trees = 1000,
+    mtry = 5,
+    importance = "impurity",
+    min.node.size = 1,
+    replace = FALSE,
+    sample.fraction = 0.63,
+    verbose = FALSE,
+    seed = 1,
+    respect.unordered.factors = "order",
+    probability = TRUE
+  )
+
+# Print RF result
+print(rf.opt)
+
+library(vip)
+# Variable Importance Plot for RF model
+vip(rf.opt, 12, geom = "point")
+
+
+```
+
+
+<br>
+(2) **Test RF model**: The random forest model is applied to the test set. ROC values are calculated. Since the data is imbalanced, the threshold should be determined via "coords" function. It's not plausible to use 0.5 as the probability threshold to make the calssification. After the optimal threshold is figured out, a confusion matrix is generated. Sensitivity(recall), specificity, precision, F1 score, as well as accuracy are calculated.  
+<br>
+```{r message=FALSE}
+library(pROC)
+# Test RF model with the test set
+rf.test.yhat = predict(rf.opt, rf.test)
+rf.test.roc = roc(rf.test$y, rf.test.yhat$prediction[,2])
+# find optimal threshold
+rf.opt.th = coords(rf.test.roc, x = "best", best.method = "closest.topleft", transpose = TRUE)
+rf.opt.th
+# creat confusion matrix
+rf.test.yhat = as.data.frame(rf.test.yhat$predictions) %>% 
+  mutate(yhat = ifelse(X1 > rf.opt.th[1], 1, 0))
+
+rf.cm = table(rf.test.yhat$yhat, rf.test$y, dnn = c("pred", "true"))
+rf.cm
+# sensitivity(recall), specificity, precision, F1 score, accuracy
+rf.sensitivity = round(rf.cm[4]/(rf.cm[4] + rf.cm[3]),4)
+rf.specificity = round(rf.cm[1]/(rf.cm[1] + rf.cm[2]),4)
+rf.precision = round(rf.cm[4]/(rf.cm[4] + rf.cm[2]),4)
+rf.f1 = round(2*rf.precision*rf.sensitivity/(rf.precision + rf.sensitivity),4)
+rf.accuracy = round((rf.cm[1] + rf.cm[4])/sum(rf.cm),4)
+
+cbind(rf.sensitivity, rf.specificity, rf.precision, rf.f1, rf.accuracy)
+
+
+```
+
+
+## Logistic Regression with Elastic Net Regularization 
+<br>
+(1) **Build LR model**: Logisic regression is a classic model for classification. Since there are multicolliearity issue, a penalized logistic regression model can be considered. Elastic net regularization has the feature of ridge penalty to deal with multicollinearity as well as that of lasso penalty to take care of variable selection.  
+<br>
+Log transformation is conducted on skewed features. And alpha and lambda are found through grid search. After feature scaling, a regularized logistic regression model is fitted and named as **lr.fit**. The top four features are "x9", "x7", "x1", and "x4".  
+<br>
+
+```{r message=FALSE}
+library(glmnet)
+#Data preparation for LR model
+lr.train = rf.train %>% 
+  mutate(x10 = log(x10),
+         x11 = log(x11),
+         x12 = log(x12 + 0.01))
+
+lr.test = rf.test %>% 
+  mutate(x10 = log(x10),
+         x11 = log(x11),
+         x12 = log(x12 + 0.01))
+
+#Grid search for parameters 
+lr.ctrl = trainControl(method = "cv", number = 10)
+
+set.seed(1)
+lr.fit = train(y~.,
+               data = lr.train,
+               method = "glmnet",
+               trControl = lr.ctrl,
+               preProcess = c("center", "scale"),
+               tuneGrid = data.frame(alpha = 0.5,
+                                     lambda = seq(0, 1, 0.01)))
+
+
+# Variable Importance Plot for LR model
+vip(lr.fit, 15, geom = "point")
+
+```
+
+<br>
+(2) **Test LR model**: Test set is used to test the performance of LR model with penalty. The optimal threshold is found in the same fashion as random forest model. Then a confusion matrix and values are obtained.  
+<br>
+```{r message=FALSE}
+# test model
+lr.test.yhat = predict(lr.fit, lr.test, type = "prob")
+# get ROC
+lr.test.roc = roc(lr.test$y, lr.test.yhat[,2])
+# find optimal threshold
+lr.opt.th = coords(lr.test.roc, x = "best", best.method = "closest.topleft", transpose = TRUE)
+lr.opt.th
+# creat confusion matrix
+lr.test.yhat = as.data.frame(lr.test.yhat) %>% 
+  mutate(yhat = ifelse(X1 > lr.opt.th[1], 1, 0))
+
+lr.cm = table(lr.test.yhat$yhat, lr.test$y, dnn = c("pred", "true"))
+lr.cm
+
+# sensitivity(recall), specificity, precision, F1 score, accuracy
+lr.sensitivity = round(lr.cm[4]/(lr.cm[4] + lr.cm[3]),4)
+lr.specificity= round(lr.cm[1]/(lr.cm[1] + lr.cm[2]),4)
+lr.precision = round(lr.cm[4]/(lr.cm[4] + lr.cm[2]),4)
+lr.f1 = round(2*lr.precision*lr.sensitivity/(lr.precision + lr.sensitivity),4)
+lr.accuracy = round((lr.cm[1] + lr.cm[4])/sum(lr.cm),4)
+
+cbind(lr.sensitivity, lr.specificity, lr.precision, lr.f1, lr.accuracy)
+
+
+```
+<br>
+
+
+
+# Model Comparison and Selection
+<br>
+(1) **ROC and AUC**: The ROC curve of Logistic regression with penalty dominates most of the time. The AUC value of LR model with penalty is 0.896, higher than that of random forest model, 0.877.  
+<br>
+(2) **Evaluation**: Under the optimal threshold, the specificity, precision, F1 score and accuracy of LR model are kind of higher than those of RF model.  
+<br>
+(3) **Selection**: LR model with penalty performs better than RF model. LR model with penalty can be selected if feature engineering is not a problem.
+<br>
+
+```{r fig.width = 8, message=FALSE}
+# ROC curve and AUC
+par(pty = "s")
+roc(rf.test$y, rf.test.yhat[,2], legacy.axes = TRUE, 
+    plot = TRUE, col = 2, lwd = 2, print.auc = TRUE)
+roc(lr.test$y, lr.test.yhat[,2], legacy.axes = TRUE, 
+    plot = TRUE, col = 4, lwd = 2, print.auc = TRUE, print.auc.y = 0.35, add = TRUE)
+legend("bottomright", legend = c("Random Forest", "Logistic Regression with Penalty"), col = c(2, 4), lwd= 2)
+
+# results
+compare = matrix(c(0.7722, 0.8182, 0.6559, 0.7093, 0.8039, 0.8734, 0.8239, 0.69, 0.7709, 0.8392),
+               nrow = 2, byrow = TRUE)
+colnames(compare) = c("Sensitivity", "Specificity", "Precision", "F1 Score", "Accuracy")
+rownames(compare) = c("RF", "LR with P")
+
+compare
+```
+<br>
+
+
+
+
