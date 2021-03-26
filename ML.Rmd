@@ -33,7 +33,7 @@ sim.data = sim.data %>%
 ```
 
 
-# Explanatory Data Analysis
+# Exploratory Data Analysis
 
 ## Check Major Numerical Variables and y  
 <br>
